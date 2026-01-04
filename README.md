@@ -281,41 +281,8 @@ For each selected principal component, connections (features) are selected based
 ├── select_pca.py          # Main module with select_pca_features function
 ├── select_ttest.py        # Main module with select_ttest_features function
 ├── pca_feature_select.py  # Core functions (pca_extract, con_extract)
-├── example.py             # Example script for PCA method
-├── example_ttest.py       # Example script for t-test method
 └── README.md             # This file
 ```
-
-## Examples
-
-### PCA-based Method
-
-See `example.py` for a complete example using real neuroimaging data.
-
-```bash
-python example.py
-```
-
-This will:
-1. Load demographic and functional connectivity data
-2. Perform PCA on connectivity features
-3. Identify PCs related to diagnosis
-4. Extract connections associated with selected PCs
-5. Save plots to the output directory
-
-### T-test-based Method
-
-See `example_ttest.py` for a complete example using real neuroimaging data.
-
-```bash
-python example_ttest.py
-```
-
-This will:
-1. Load demographic and functional connectivity data
-2. Perform t-test for each feature (MDD vs HC, ASD vs HC, SCZ vs HC)
-3. Apply multiple comparison correction (FDR-BH and Bonferroni)
-4. Save selected feature indices to CSV files
 
 ## Output
 
