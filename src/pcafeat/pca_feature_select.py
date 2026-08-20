@@ -6,23 +6,13 @@ Created on Mon Apr 24 09:27:26 2023
 @author: ayumu
 """
 
-import seaborn as sns
 import matplotlib.pyplot as plt
 import pandas as pd
 import numpy as np
-import scipy.io
-import matplotlib as mp
-from sklearn.decomposition import PCA
-import random
 from scipy.stats import ttest_ind
 import statsmodels.stats.multitest as smt
-import statsmodels.api as sm
 import scipy.stats as stats
-import glob
-import os
 from tqdm import tqdm
-from collections import Counter
-import sys
 from joblib import Parallel, delayed
 
 
@@ -32,11 +22,17 @@ def compute_statistics_anova(pca_i, df_score_tmp, target_col):
     return tmp_stat, p_value
 
 
-def pca_extract(df_score, target, method_pick_pca, fig_plot, fig_dir, bar_color='blue'):
+def pca_extract(df_score, target, method_pick_pca, fig_plot, fig_dir,
+                bar_color='blue', n_pcs=None, alpha=0.05):
     """
     df_score: PCAスコアのみを含むDataFrame（NaNは既に除外されている想定）
     target: ターゲット変数のSeries（df_score[target]に相当、NaNは既に除外されている想定）
+    method_pick_pca: 有意なPCを選択するための多重比較補正方法（n_pcsがNoneの場合に使用）
+    fig_plot: 統計量のプロットを生成・保存するかどうか
+    fig_dir: プロットを保存するディレクトリパス（fig_plot=Trueの場合に必要）
     bar_color: プロットのバーの色（デフォルト: 'blue'）
+    n_pcs: 上位N個のPCを絶対統計量で選択する場合の数（Noneの場合は多重比較補正を使用）
+    alpha: 多重比較補正の有意水準（n_pcsがNoneの場合に使用、デフォルト: 0.05）
     """
     # targetをSeriesに変換（まだSeriesでない場合）
     if not isinstance(target, pd.Series):
@@ -95,7 +91,7 @@ def pca_extract(df_score, target, method_pick_pca, fig_plot, fig_dir, bar_color=
         statistics, p = zip(*results)
 
     if fig_plot:
-        show_num = 20;
+        show_num = 20
         plt.figure()
         plt.bar(range(len(statistics[:show_num])), np.abs(statistics[:show_num]), color=bar_color)
         plt.xticks(range(len(statistics[:show_num])), range(1, len(statistics[:show_num]) + 1))
@@ -105,8 +101,14 @@ def pca_extract(df_score, target, method_pick_pca, fig_plot, fig_dir, bar_color=
         plt.savefig(fig_dir + target_name + '.png')
         plt.savefig(fig_dir + target_name + '.svg')
 
-    h = smt.multipletests(p, method=method_pick_pca)[0]
-    ind = np.where(h)[0]
+    statistics = np.asarray(statistics)
+    if n_pcs is not None:
+        # Top-N by absolute statistic
+        ind = np.argsort(np.abs(statistics))[::-1][:int(n_pcs)]
+    else:
+        # P-value based selection
+        h = smt.multipletests(p, method=method_pick_pca, alpha=alpha)[0]
+        ind = np.where(h)[0]
     print(f'{target_name} related pcs are {ind}')
     return ind, statistics
 
@@ -131,22 +133,19 @@ def con_extract(coeff, pcs, method):
     cons = np.where(tmp_use_con)[0]
     cons_pc = tmp_use_con_pc[cons]
     con_num_tmp = len(cons)
-    print(con_num_tmp)
+    print(f"Extracted {con_num_tmp} connections")
     return cons, cons_pc
 
 
-def check_p_value(coeff, ind, serch_num):
+def check_p_value(coeff, ind, search_num):
     use_coeff = coeff[:, ind]
     original_indices = np.arange(len(use_coeff))
     p_hist_val = []
-    H = []
     removed_indices = []
-    for i in tqdm(range(serch_num)):
+    for i in tqdm(range(search_num)):
         x = (use_coeff / np.std(use_coeff)) ** 2
         p_values = 1 - stats.chi2.cdf(x, 1)
         hist, bin_edges = np.histogram(p_values, bins=100)
-        p_inf = hist / len(use_coeff)
-        H.append(stats.entropy(p_inf))
         p_hist_val.append(np.var(hist))
         min_index = np.argmin(p_values)
         removed_indices.append(original_indices[min_index])
@@ -155,3 +154,89 @@ def check_p_value(coeff, ind, serch_num):
     con_num = np.argmin(p_hist_val)
     use_con = removed_indices[:con_num]
     return use_con, con_num
+
+
+def select_optimal_pcs(
+    target_pcs_lists,
+    noise_pcs_lists,
+    n_pcs=3,
+    primary_target_pcs_lists=None
+):
+    """
+    target_pcs_lists: List of (pc_index, score) lists for each target/supportive metric
+    noise_pcs_lists: List of (pc_index, score) lists for each noise/confound metric
+    n_pcs: Number of PCs to return (default: 3)
+    primary_target_pcs_lists: If provided, restricts selection to PCs in these lists.
+        These lists do NOT contribute to scoring — include primary metrics in both
+        target_pcs_lists and primary_target_pcs_lists.
+    """
+    if not target_pcs_lists:
+        raise ValueError("target_pcs_lists cannot be empty")
+
+    if not noise_pcs_lists:
+        raise ValueError("noise_pcs_lists cannot be empty")
+
+    # Collect all PCs that appear in any list
+    all_pcs = set()
+    for pc_list in target_pcs_lists:
+        for pc, _ in pc_list:
+            all_pcs.add(pc)
+    for pc_list in noise_pcs_lists:
+        for pc, _ in pc_list:
+            all_pcs.add(pc)
+
+    # Determine candidate PCs: restrict to primary targets if provided,
+    # otherwise allow any target PC.
+    if primary_target_pcs_lists:
+        candidate_pcs_set = set()
+        for pc_list in primary_target_pcs_lists:
+            for pc, _ in pc_list:
+                candidate_pcs_set.add(pc)
+        # Include primary PCs in array sizing even if not in target/noise lists
+        all_pcs.update(candidate_pcs_set)
+    else:
+        candidate_pcs_set = all_pcs.copy()
+
+    if not all_pcs:
+        return np.array([], dtype=int), {
+            'final_score': np.array([]),
+            'target_score': np.array([]),
+            'noise_score': np.array([]),
+            'primary_target_pcs_lists': primary_target_pcs_lists,
+            'target_pcs_lists': target_pcs_lists,
+            'noise_pcs_lists': noise_pcs_lists,
+        }
+
+    n_pcs_total = max(all_pcs) + 1
+
+    # Sum absolute scores for each PC.
+    # target_pcs_lists contains all target metrics (primary + supportive).
+    # primary_target_pcs_lists is only used for restricting the candidate set.
+    target_score = np.zeros(n_pcs_total)
+    for pc_list in target_pcs_lists:
+        for pc, score in pc_list:
+            target_score[pc] += abs(score)
+
+    noise_score = np.zeros(n_pcs_total)
+    for pc_list in noise_pcs_lists:
+        for pc, score in pc_list:
+            noise_score[pc] += abs(score)
+
+    # Final score: high target, low noise
+    epsilon = 1e-10
+    final_score = target_score / (noise_score + epsilon)
+
+    candidate_pcs = np.asarray(sorted(candidate_pcs_set))
+    candidate_final_score = final_score[candidate_pcs]
+    ranked_indices = np.argsort(candidate_final_score)[::-1][:n_pcs]
+    selected_pcs = candidate_pcs[ranked_indices]
+
+    info = {
+        'final_score': final_score,
+        'target_score': target_score,
+        'noise_score': noise_score,
+        'primary_target_pcs_lists': primary_target_pcs_lists,
+        'target_pcs_lists': target_pcs_lists,
+        'noise_pcs_lists': noise_pcs_lists,
+    }
+    return selected_pcs, info
